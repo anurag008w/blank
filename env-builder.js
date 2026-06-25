@@ -1143,7 +1143,7 @@ const FIELDS = [
     "k": "CLOUDFLARE_PROXY_URL",
     "lbl": "Proxy worker URL",
     "type": "text",
-    "ph": "https://your-proxy.workers.dev",
+    "ph": "https://your-proxy.deno.dev",
     "common": 1,
     "tag": "feature"
   },
@@ -1167,8 +1167,17 @@ const FIELDS = [
 {
     "g": "Cloudflare",
     "icon": "⚡",
-    "k": "CLOUDFLARE_WORKERS_TOKEN",
-    "lbl": "Workers API token",
+    "k": "DENO_DEPLOY_TOKEN",
+    "lbl": "Deno Deploy token (proxy auto-setup)",
+    "type": "password",
+    "common": 1,
+    "tag": "credential"
+  },
+{
+    "g": "Cloudflare",
+    "icon": "⚡",
+    "k": "CRONJOB_API_KEY",
+    "lbl": "cron-job.org API key (keep-awake)",
     "type": "password",
     "common": 1,
     "tag": "credential"
@@ -1233,17 +1242,8 @@ const FIELDS = [
 {
     "g": "Integrations",
     "icon": "🔌",
-    "k": "CLOUDFLARE_ACCOUNT_ID",
-    "lbl": "Cloudflare account ID",
-    "type": "text",
-    "ph": "account-id",
-    "tag": "feature"
-  },
-{
-    "g": "Integrations",
-    "icon": "🔌",
-    "k": "CLOUDFLARE_WORKER_NAME",
-    "lbl": "Outbound proxy worker name",
+    "k": "DENO_PROJECT_NAME",
+    "lbl": "Deno proxy app slug (optional override)",
     "type": "text",
     "ph": "huggingclaw-proxy",
     "tag": "feature"
@@ -1252,25 +1252,16 @@ const FIELDS = [
     "g": "Integrations",
     "icon": "🔌",
     "k": "CLOUDFLARE_KEEPALIVE_URL",
-    "lbl": "Keepalive worker URL",
+    "lbl": "Keep-awake ping URL (optional override)",
     "type": "text",
-    "ph": "https://your-worker.workers.dev",
-    "tag": "feature"
-  },
-{
-    "g": "Integrations",
-    "icon": "🔌",
-    "k": "CLOUDFLARE_KEEPALIVE_WORKER_NAME",
-    "lbl": "Keepalive worker name",
-    "type": "text",
-    "ph": "huggingclaw-keepalive",
+    "ph": "https://your-space.hf.space/health",
     "tag": "feature"
   },
 {
     "g": "Integrations",
     "icon": "🔌",
     "k": "CLOUDFLARE_KEEPALIVE_CRON",
-    "lbl": "Keepalive cron schedule",
+    "lbl": "Keep-awake cron schedule",
     "type": "text",
     "ph": "*/5 * * * *",
     "tag": "advanced"

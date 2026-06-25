@@ -202,7 +202,7 @@ if (_spacPrivacyEnv !== "public" && _spacPrivacyEnv !== "private") {
   setInterval(detectSpacePrivacy, 5 * 60 * 1000);
 }
 const CLOUDFLARE_KEEPALIVE_STATUS_FILE =
-  "/tmp/huggingclaw-cloudflare-keepalive-status.json";
+  "/tmp/huggingclaw-keepalive-status.json";
 
 function parseRequestUrl(url) {
   try { return new URL(url, "http://localhost"); }
@@ -411,25 +411,25 @@ function renderDashboard(data) {
   const syncTone = ["success","restored","synced","configured"].includes(syncStatus) ? "ok" : syncStatus === "disabled" ? "warn" : syncStatus === "error" ? "off" : "neutral";
   const kaConf = data.keepalive?.configured === true;
   const kaEnabled = isTrue(process.env.CLOUDFLARE_KEEPALIVE_ENABLED);
-  const kaStatus = String(data.keepalive?.status || (kaEnabled && process.env.CLOUDFLARE_WORKERS_TOKEN ? "pending" : "disabled"));
-  const kaTone = kaConf ? "ok" : kaEnabled && process.env.CLOUDFLARE_WORKERS_TOKEN ? "warn" : "neutral";
+  const kaStatus = String(data.keepalive?.status || (kaEnabled && process.env.CRONJOB_API_KEY ? "pending" : "disabled"));
+  const kaTone = kaConf ? "ok" : kaEnabled && process.env.CRONJOB_API_KEY ? "warn" : "neutral";
   const kaDetail = kaConf
     ? `Pinging <code>${escapeHtml(data.keepalive?.targetUrl || "/health")}</code>`
-    : kaEnabled && process.env.CLOUDFLARE_WORKERS_TOKEN
-      ? "Worker pending or failed"
-      : "Cloudflare keep-awake is off by default";
+    : kaEnabled && process.env.CRONJOB_API_KEY
+      ? "Cron job pending or failed"
+      : "Keep-awake is off by default";
 
   const tiles = [
     tile({ title: "Gateway", value: badge(data.gatewayReady ? "Online" : "Offline", data.gatewayReady ? "ok" : "off"), detail: `OpenClaw on internal port ${GATEWAY_PORT}`, tone: data.gatewayReady ? "ok" : "off" }),
     tile({ title: "Model", value: `<code>${escapeHtml(LLM_MODEL)}</code>`, detail: LLM_PROVIDER ? `Provider: ${escapeHtml(LLM_PROVIDER)}` : "Primary LLM configured", tone: "neutral" }),
     tile({ title: "Runtime", value: escapeHtml(data.uptimeHuman), detail: `Public port ${PORT}`, tone: "neutral" }),
-    tile({ title: "Telegram", value: badge(TELEGRAM_ENABLED ? "Enabled" : "Disabled", TELEGRAM_ENABLED ? "ok" : "neutral"), detail: TELEGRAM_ENABLED ? (TELEGRAM_WEBHOOK_URL ? "Webhook" : "Polling") + (process.env.CLOUDFLARE_PROXY_URL ? " via CF proxy" : "") : "Not configured", tone: TELEGRAM_ENABLED ? "ok" : "neutral" }),
+    tile({ title: "Telegram", value: badge(TELEGRAM_ENABLED ? "Enabled" : "Disabled", TELEGRAM_ENABLED ? "ok" : "neutral"), detail: TELEGRAM_ENABLED ? (TELEGRAM_WEBHOOK_URL ? "Webhook" : "Polling") + (process.env.CLOUDFLARE_PROXY_URL ? " via proxy" : "") : "Not configured", tone: TELEGRAM_ENABLED ? "ok" : "neutral" }),
   ];
 
 
   tiles.push(
     tile({ title: "Backup", value: badge(syncStatus.toUpperCase(), syncTone), detail: escapeHtml(data.sync?.message || "No status yet"), tone: syncTone, meta: data.sync?.timestamp ? `<span class="local-time" data-iso="${data.sync.timestamp}"></span>` : "" }),
-    tile({ title: "Keep Awake", value: badge(kaConf ? "CF Cron" : kaStatus.toUpperCase(), kaTone), detail: kaDetail, tone: kaTone }),
+    tile({ title: "Keep Awake", value: badge(kaConf ? "Cron.org" : kaStatus.toUpperCase(), kaTone), detail: kaDetail, tone: kaTone }),
   );
 
   if (JUPYTER_ENABLED) {
@@ -487,7 +487,7 @@ function renderDashboard(data) {
     <a class="hero-action keys" data-space-link="key-rotator" href="/key-rotator">🔑 Key Rotator →</a>
   </div>
   <section class="keepawake-panel" aria-label="Browser keep-awake helper">
-    <p><strong>Browser Keep Awake:</strong> Cloudflare Worker jo kaam karta hai woh external cron se <code>/health</code> ping karta hai. Ye button wahi ping browser se karta rahega, isliye tab open rehna zaroori hai.</p>
+    <p><strong>Browser Keep Awake:</strong> cron-job.org external cron se <code>/health</code> ping karta hai. Ye button wahi ping browser se karta rahega, isliye tab open rehna zaroori hai.</p>
     <div class="keepawake-actions">
       <button type="button" id="browser-keepawake" class="mini-btn">▶ Start browser keep-awake</button>
       <a class="mini-btn secondary" href="/health" target="_blank" rel="noopener noreferrer">Open /health ping</a>

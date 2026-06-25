@@ -666,15 +666,15 @@ else
   echo "HF_TOKEN not set — running without dataset persistence."
 fi
 
-CLOUDFLARE_WORKERS_TOKEN="${CLOUDFLARE_WORKERS_TOKEN:-}"
-export CLOUDFLARE_WORKERS_TOKEN
+DENO_DEPLOY_TOKEN="${DENO_DEPLOY_TOKEN:-}"
+export DENO_DEPLOY_TOKEN
 CF_PROXY_ENV_FILE="/tmp/huggingclaw-cloudflare-proxy.env"
-if [ -n "${CLOUDFLARE_WORKERS_TOKEN:-}" ] || [ -n "${CLOUDFLARE_PROXY_URL:-}" ]; then
+if [ -n "${DENO_DEPLOY_TOKEN:-}" ] || [ -n "${CLOUDFLARE_PROXY_URL:-}" ]; then
   # Default debug off for production. Set CLOUDFLARE_PROXY_DEBUG=true in HF
   # Space secrets to surface per-request "Redirecting" + error-cause logs.
   export CLOUDFLARE_PROXY_DEBUG="${CLOUDFLARE_PROXY_DEBUG:-false}"
-  echo "Preparing Cloudflare outbound proxy..."
-  python3 /home/node/app/cloudflare-proxy-setup.py || true
+  echo "Preparing Deno Deploy outbound proxy..."
+  python3 /home/node/app/deno-proxy-setup.py || true
   if [ -f "$CF_PROXY_ENV_FILE" ]; then
     . "$CF_PROXY_ENV_FILE"
   fi
@@ -1892,11 +1892,11 @@ if [ "$RUNTIME_JUPYTER_ENABLED" = "true" ]; then
   start_jupyter_once
 fi
 
-if [ "$(printf '%s' "${CLOUDFLARE_KEEPALIVE_ENABLED:-false}" | tr '[:upper:]' '[:lower:]')" = "true" ] && [ -n "${CLOUDFLARE_WORKERS_TOKEN:-}" ]; then
-  echo "Setting up Cloudflare KeepAlive monitor..."
-  python3 /home/node/app/cloudflare-keepalive-setup.py || true
+if [ "$(printf '%s' "${CLOUDFLARE_KEEPALIVE_ENABLED:-false}" | tr '[:upper:]' '[:lower:]')" = "true" ] && [ -n "${CRONJOB_API_KEY:-}" ]; then
+  echo "Setting up cron-job.org KeepAlive monitor..."
+  python3 /home/node/app/cronjob-keepalive-setup.py || true
 else
-  python3 /home/node/app/cloudflare-keepalive-setup.py >/dev/null 2>&1 || true
+  python3 /home/node/app/cronjob-keepalive-setup.py >/dev/null 2>&1 || true
 fi
 
 # ── Write shell capture wrappers to .bashrc ──

@@ -21,8 +21,10 @@ secrets:
     description: "Strong token to secure your OpenClaw Control UI (generate: openssl rand -hex 32)."
   - name: JUPYTER_TOKEN
     description: "Optional token for the JupyterLab terminal at /terminal/. Defaults to GATEWAY_TOKEN when set — no extra secret needed."
-  - name: CLOUDFLARE_WORKERS_TOKEN
-    description: "Cloudflare API token — auto-creates a Worker proxy and KeepAlive monitor."
+  - name: DENO_DEPLOY_TOKEN
+    description: "Deno Deploy v2 token (ddo_...) — auto-creates a Deno proxy worker for blocked outbound traffic."
+  - name: CRONJOB_API_KEY
+    description: "cron-job.org API key — auto-creates a keep-awake cron job that pings your Space."
   - name: TELEGRAM_ALLOWED_USERS
     description: "Comma-separated Telegram user IDs for access"
   - name: TELEGRAM_BOT_TOKEN
@@ -70,9 +72,9 @@ secrets:
 - 🔑 **Multi-Key Rotation:** Supply comma-separated key pools per provider (e.g. `ANTHROPIC_API_KEYS=key1,key2,key3`) for automatic round-robin rotation across rate limits.
 - ⚡ **Zero Config:** Duplicate this Space and set **just three** secrets (LLM_API_KEY, LLM_MODEL, GATEWAY_TOKEN) – no other setup needed.
 - 🐳 **Fast Builds:** Uses a pre-built OpenClaw Docker image to deploy in minutes.
-- 🌐 **Cloudflare Outbound Proxy:** HuggingClaw can automatically provision a Cloudflare Worker proxy for blocked outbound traffic such as Telegram API requests.
+- 🌐 **Deno Deploy Outbound Proxy:** HuggingClaw can automatically provision a Deno Deploy edge proxy for blocked outbound traffic such as Telegram API requests.
 - 💾 **Workspace Backup:** Chats, settings, and WhatsApp session state sync to a private HF Dataset via the `huggingface_hub`, preserving data automatically without storing your HF token in a git remote.
-- ⏰ **Easy Keep-Alive:** Uses `CLOUDFLARE_WORKERS_TOKEN` to automatically set up a cron-triggered keep-awake worker at boot.
+- ⏰ **Easy Keep-Alive:** Uses `CRONJOB_API_KEY` to automatically set up a cron-job.org keep-awake job that pings `/health` at boot.
 - 👥 **Multi-User Messaging:** Support for Telegram (multi-user) and WhatsApp (pairing).
 - 📊 **Visual Dashboard:** Beautiful Web UI to monitor uptime, sync status, and active models.
 - 🔔 **Webhooks:** Get notified on restarts or backup failures via standard webhooks.
@@ -136,7 +138,7 @@ To chat via Telegram:
 
 1. Create a bot via [@BotFather](https://t.me/BotFather): send `/newbot`, follow prompts, and copy the bot token.
 2. Find your Telegram user ID with [@userinfobot](https://t.me/userinfobot).
-3. Add `CLOUDFLARE_WORKERS_TOKEN` in Space secrets to let HuggingClaw auto-provision the outbound proxy, or set `CLOUDFLARE_PROXY_URL` manually if you already have a Worker.
+3. Add `DENO_DEPLOY_TOKEN` in Space secrets to let HuggingClaw auto-provision the outbound proxy, or set `CLOUDFLARE_PROXY_URL` manually if you already have one deployed.
 4. Add these secrets in Settings → Secrets. After restarting, the bot should appear online on Telegram.
 
 | Variable | Default | Description |
@@ -145,25 +147,25 @@ To chat via Telegram:
 | `TELEGRAM_ALLOWED_USERS` | — | Comma-separated Telegram user IDs for access |
 | `TELEGRAM_WEBHOOK_URL` | *(auto-provisioned)* | Override webhook URL; set `TELEGRAM_MODE=polling` to use long-polling instead |
 
-## 🌐 Cloudflare Proxy Setup
+## 🌐 Deno Deploy Proxy Setup
 
-Hugging Face Free Tier often restricts outbound connections to services like Telegram, Discord, and WhatsApp. HuggingClaw solves this with a **Transparent Outbound Proxy** via Cloudflare Workers.
+Hugging Face Free Tier often restricts outbound connections to services like Telegram, Discord, and WhatsApp. HuggingClaw solves this with a **Transparent Outbound Proxy** via Deno Deploy edge workers.
 
 ### ⚡ Automatic Setup (Recommended)
 
 This is the easiest way. HuggingClaw will handle the deployment for you.
 
-1. Create a **Cloudflare API Token**:
-   - Go to [API Tokens](https://dash.cloudflare.com/profile/api-tokens).
-   - Create Token -> **Edit Cloudflare Workers** template.
-   - Ensure it has `Account: Workers Scripts: Edit` permissions.
-2. Add the token as a secret named `CLOUDFLARE_WORKERS_TOKEN` in your Space Settings.
+1. Create a **Deno Deploy v2 token**:
+   - Go to [console.deno.com](https://console.deno.com), create or open your organization.
+   - Go to **Settings → Access Tokens → Create Token**.
+   - The token will start with `ddo_` — copy it and keep it safe.
+2. Add the token as a secret named `DENO_DEPLOY_TOKEN` in your Space Settings.
 
 **What happens next?**
 
-- HuggingClaw automatically creates a Worker named after your Space host.
+- HuggingClaw automatically creates a Deno Deploy app named after your Space host.
 - It generates a secure, private `CLOUDFLARE_PROXY_SECRET`.
-- All restricted outbound traffic is automatically routed through this Worker.
+- All restricted outbound traffic is automatically routed through this worker.
 
 ## 💬 WhatsApp Setup *(Optional)*
 
@@ -254,7 +256,7 @@ Both options change the Docker sudoers file so anyone who can access the Jupyter
 
 ## 💓 Staying Alive *(Recommended on Free HF Spaces)*
 
-Your Space will automatically be kept awake by a background Cloudflare Worker when you configure the `CLOUDFLARE_WORKERS_TOKEN` secret. The worker uses a cron trigger to regularly ping your Space's `/health` endpoint. The dashboard displays the current keep-alive worker status.
+Your Space will automatically be kept awake by a cron-job.org scheduled job when you set the `CRONJOB_API_KEY` secret and `CLOUDFLARE_KEEPALIVE_ENABLED=true`. The job pings your Space's `/health` endpoint on the schedule defined by `CLOUDFLARE_KEEPALIVE_CRON` (default: every 10 minutes). The dashboard **Keep Awake** tile shows live status.
 
 ## 🔔 Webhooks *(Optional)*
 
@@ -496,7 +498,7 @@ HuggingClaw uses a multi-layered approach to ensure stability and persistence on
 - **Missing secrets:** Ensure `LLM_API_KEY`, `LLM_MODEL`, and `GATEWAY_TOKEN` are set in your Space **Settings → Secrets**.
 - **Telegram bot issues:** Verify your `TELEGRAM_BOT_TOKEN`. Check Space logs for lines like `📱 Enabling Telegram`.
 - **Backup restore failing:** Make sure `HF_TOKEN` is valid and has write access to your HF account dataset. Set `HF_USERNAME` only if auto-detection is not available in your environment.
-- **Space keeps sleeping:** Cloudflare keep-awake monitoring is disabled by default. Add `CLOUDFLARE_WORKERS_TOKEN` and set `CLOUDFLARE_KEEPALIVE_ENABLED=true` to opt in to Cloudflare Workers keep-awake monitoring.
+- **Space keeps sleeping:** Keep-awake is disabled by default. Add `CRONJOB_API_KEY` and set `CLOUDFLARE_KEEPALIVE_ENABLED=true` to enable cron-job.org keep-awake monitoring.
 - **Auth errors / proxy:** If you see reverse-proxy auth errors, add the logged IPs under `TRUSTED_PROXIES` (from logs `remote=x.x.x.x`).
 - **Control UI says too many failed authentication attempts:** Wait for the retry window to expire, then open the Space in an incognito window or clear site storage for your Space before logging in again with `GATEWAY_TOKEN`.
 - **WhatsApp lost its session after restart:** Make sure `HF_TOKEN` is configured so the hidden session backup can be restored on boot.

@@ -46,11 +46,11 @@ const DEFAULT_PROXY_DOMAINS = [
   // only per-key). HuggingFace Spaces share an egress IP range, so requests from
   // every Space (and every key) collide on the same throttled IP, exhausting
   // keys far faster than their per-key quota would suggest. Routing these
-  // through the Cloudflare Worker gives them a dedicated Cloudflare edge IP and
+  // through the Deno Deploy worker gives them a dedicated edge IP and
   // stops the per-IP throttling, so multi-key rotation actually buys you more
-  // throughput. The Worker only forwards to an allow-list (see
-  // cloudflare-proxy-setup.py) and the shared secret is attached, so the API key
-  // is still only seen by Cloudflare's network, not stored there.
+  // throughput. The worker only forwards to an allow-list (see
+  // deno-proxy-setup.py) and the shared secret is attached, so the API key
+  // is still only seen by the edge network, not stored there.
   "generativelanguage.googleapis.com",
   "aiplatform.googleapis.com",
   "openrouter.ai",
