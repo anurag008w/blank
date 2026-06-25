@@ -340,10 +340,34 @@ def deploy_worker(token: str, app_slug: str, worker_source: str) -> str:
     return revision_id
 
 
+def extract_hostname_url(rev: dict) -> str | None:
+    """
+    Pull a routable HTTPS URL out of a Revision object's `timelines` field.
+
+    The Deno Deploy v2 API has NO `url` / `preview_url` / `deployment_url`
+    field on Revision or App objects — those were a v1/Classic-API holdover.
+    The only place a hostname actually lives is:
+
+        revision.timelines[].hostnames[]   (see GET /v2/revisions/{id})
+
+    Each entry's `name` is e.g. "Production" or "Preview". We prefer the
+    production timeline, then fall back to whatever has a hostname.
+    """
+    timelines = rev.get("timelines") or []
+    for tl in timelines:
+        if "production" in str(tl.get("name", "")).lower() and tl.get("hostnames"):
+            return f"https://{tl['hostnames'][0]}"
+    for tl in timelines:
+        if tl.get("hostnames"):
+            return f"https://{tl['hostnames'][0]}"
+    return None
+
+
 def wait_for_revision(token: str, revision_id: str, timeout: int = 120) -> str | None:
     """
-    Poll until revision status is 'succeeded' or a terminal failure.
-    Returns the preview_url if available, else None.
+    Poll GET /v2/revisions/{id} until status is 'succeeded' or a terminal
+    failure. Returns a routable HTTPS URL derived from `timelines`, or None
+    if we time out (or hostnames haven't shown up yet).
     """
     deadline = time.monotonic() + timeout
     interval = 3
@@ -354,21 +378,28 @@ def wait_for_revision(token: str, revision_id: str, timeout: int = 120) -> str |
             time.sleep(interval)
             continue
 
+        # Real status enum: skipped | queued | building | succeeded | failed
         status = rev.get("status", "")
         if status == "succeeded":
-            # Try common URL field names
-            url = (
-                rev.get("preview_url")
-                or rev.get("url")
-                or rev.get("deployment_url")
-            )
-            return url
-        if status in ("failed", "skipped", "cancelled", "errored"):
-            reason = rev.get("failure_reason") or rev.get("error") or status
+            url = extract_hostname_url(rev)
+            if url:
+                return url
+            # Status flipped but routing/timelines hasn't propagated to this
+            # read yet — give it a couple more beats before giving up.
+            time.sleep(interval)
+            continue
+        if status == "failed":
+            # failure_reason is one of: error | cancelled | timed_out | skipped
+            reason = rev.get("failure_reason") or "failed"
             raise RuntimeError(
                 f"Deno Deploy revision {revision_id} failed with status '{status}': {reason}"
             )
-        # Still building — keep polling
+        if status == "skipped":
+            raise RuntimeError(
+                f"Deno Deploy revision {revision_id} was skipped "
+                "(e.g. a commit message containing '[skip-ci]')."
+            )
+        # queued / building — keep polling
         time.sleep(interval)
         interval = min(interval + 1, 10)
 
@@ -380,42 +411,31 @@ def wait_for_revision(token: str, revision_id: str, timeout: int = 120) -> str |
     return None
 
 
-def get_app_url(token: str, app_slug: str, revision_preview_url: str | None) -> str:
+def get_app_url(token: str, revision_id: str, revision_url: str | None) -> str:
     """
-    Derive the stable proxy URL.
+    Derive the stable proxy URL for the deployed worker.
     Priority:
-      1. revision's preview_url (reliable, revision-specific)
-      2. app-level url field (if exposed)
-      3. fallback: fetch app details and look for any URL field
+      1. The URL wait_for_revision() already resolved from `timelines`.
+      2. One more direct fetch of the revision, in case `timelines` simply
+         hadn't propagated by the time polling stopped.
     Raises RuntimeError if nothing found.
     """
-    if revision_preview_url:
-        return revision_preview_url
+    if revision_url:
+        return revision_url
 
-    # Try fetching app details — might have a 'url' or 'urls' field
     try:
-        app = deno_request("GET", f"/apps/{app_slug}", token)
-        for field in ("url", "default_url", "production_url", "domain"):
-            val = app.get(field)
-            if val and isinstance(val, str) and val.startswith("https://"):
-                return val
-        urls = app.get("urls") or app.get("domains") or []
-        if isinstance(urls, list) and urls:
-            first = urls[0]
-            if isinstance(first, str) and first.startswith("https://"):
-                return first
-            if isinstance(first, dict):
-                for k in ("url", "hostname", "domain"):
-                    v = first.get(k, "")
-                    if v:
-                        return f"https://{v}" if not v.startswith("http") else v
+        rev = deno_request("GET", f"/revisions/{revision_id}", token)
+        url = extract_hostname_url(rev)
+        if url:
+            return url
     except RuntimeError:
         pass
 
     raise RuntimeError(
-        f"Could not determine the Deno Deploy app URL for slug '{app_slug}'. "
-        "Deploy succeeded but the URL was not returned by the API. "
-        "Set CLOUDFLARE_PROXY_URL manually in your HF Space secrets."
+        f"Could not determine a routable URL for Deno Deploy revision '{revision_id}'. "
+        "The build succeeded but no timeline has an active hostname yet "
+        "(routing can lag briefly). Check the Deno Deploy dashboard, or set "
+        "CLOUDFLARE_PROXY_URL manually in your HF Space secrets."
     )
 
 
@@ -496,7 +516,7 @@ def main() -> int:
         print(f"Revision {revision_id} queued — waiting for build...", file=sys.stderr)
 
         preview_url = wait_for_revision(api_token, revision_id)
-        proxy_url = get_app_url(api_token, actual_slug, preview_url)
+        proxy_url = get_app_url(api_token, revision_id, preview_url)
 
         write_env(proxy_url, proxy_secret)
         print(f"Deno Deploy proxy ready: {proxy_url}", file=sys.stderr)
