@@ -1496,7 +1496,7 @@ if [ -f "$EXISTING_CONFIG" ]; then
          .
        end
      | .channels = ((.channels // {}) * ($desired.channels // {}))
-     | .plugins.allow = (((.plugins.allow // []) + ($desired.plugins.allow // [])) | unique | map(select(startswith("clawhub:") | not)))
+     | .plugins.allow = (((.plugins.allow // []) + ($desired.plugins.allow // [])) | unique | map(select((startswith("clawhub:") or . == "@openclaw/whatsapp") | not)))
      | .plugins.deny = (((.plugins.deny // []) + ($desired.plugins.deny // [])) | unique)
      | .plugins.entries = ((.plugins.entries // {}) * ($desired.plugins.entries // {}))
      | del(.plugins.entries.acpx)
@@ -2732,13 +2732,13 @@ install_whatsapp_plugin_runtime() {
           .plugins.installs = ((.plugins.installs // {}) + ($installed[0].plugins.installs // {}))
           | .plugins.entries.whatsapp = (($installed[0].plugins.entries.whatsapp // {}) + (.plugins.entries.whatsapp // {}) + {"enabled": true})
           | .channels.whatsapp = (.channels.whatsapp // {"dmPolicy": "pairing"})
-          | .plugins.allow = (((.plugins.allow // []) + ["whatsapp", "@openclaw/whatsapp"]) | unique)
+          | .plugins.allow = (((.plugins.allow // []) + ["whatsapp"]) | unique)
         ' "$config" > "$config.tmp" 2>/dev/null && mv "$config.tmp" "$config" || rm -f "$config.tmp"
       else
         jq '
           .plugins.entries.whatsapp.enabled = true
           | .channels.whatsapp = (.channels.whatsapp // {"dmPolicy": "pairing"})
-          | .plugins.allow = (((.plugins.allow // []) + ["whatsapp", "@openclaw/whatsapp"]) | unique)
+          | .plugins.allow = (((.plugins.allow // []) + ["whatsapp"]) | unique)
         ' "$config" > "$config.tmp" 2>/dev/null && mv "$config.tmp" "$config" || rm -f "$config.tmp"
       fi
     fi
