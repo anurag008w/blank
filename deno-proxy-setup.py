@@ -231,14 +231,79 @@ async function handleRequest(request) {{
     headers.delete(h);
   }}
 
-  // WebSocket upgrades must NOT carry body/redirect — Deno passes them through transparently.
+  // WebSocket proxying: Deno Deploy does NOT transparently tunnel WebSocket
+  // via fetch() the way Cloudflare Workers do. Use Deno.upgradeWebSocket() to
+  // create a proper bidirectional tunnel between the client and the upstream
+  // WhatsApp / Telegram / Discord WebSocket server.
   const isWS = (request.headers.get("Upgrade") || "").toLowerCase() === "websocket";
-  const fetchInit = isWS
-    ? {{ method: request.method, headers }}
-    : {{ method: request.method, headers, body: request.body, redirect: "follow" }};
 
+  if (isWS) {{
+    let upgradeResult;
+    try {{
+      upgradeResult = Deno.upgradeWebSocket(request);
+    }} catch (err) {{
+      return new Response(`WebSocket upgrade failed: ${{err.message}}`, {{ status: 400 }});
+    }}
+    const {{ socket: clientSocket, response }} = upgradeResult;
+
+    // Build the upstream WebSocket URL: https -> wss, http -> ws
+    const wsTargetUrl = targetUrl
+      .replace(/^https:\/\//i, "wss://")
+      .replace(/^http:\/\//i,  "ws://");
+
+    let serverWs = null;
+
+    clientSocket.onopen = () => {{
+      try {{
+        serverWs = new WebSocket(wsTargetUrl);
+        serverWs.binaryType = "arraybuffer";
+
+        serverWs.onopen = () => {{
+          // Wire up client → server forwarding now that server is ready
+          clientSocket.onmessage = (e) => {{
+            if (serverWs.readyState === WebSocket.OPEN) {{
+              serverWs.send(e.data);
+            }}
+          }};
+        }};
+
+        serverWs.onmessage = (e) => {{
+          if (clientSocket.readyState === WebSocket.OPEN) {{
+            clientSocket.send(e.data);
+          }}
+        }};
+
+        serverWs.onclose = (e) => {{
+          try {{ clientSocket.close(e.code || 1000, e.reason || ""); }} catch (_) {{}}
+        }};
+
+        serverWs.onerror = () => {{
+          try {{ clientSocket.close(1011, "Upstream WebSocket error"); }} catch (_) {{}}
+        }};
+      }} catch (err) {{
+        try {{ clientSocket.close(1011, `Upstream connect failed: ${{err.message}}`); }} catch (_) {{}}
+      }}
+    }};
+
+    clientSocket.onclose = () => {{
+      if (serverWs) {{ try {{ serverWs.close(); }} catch (_) {{}} }}
+    }};
+
+    clientSocket.onerror = () => {{
+      if (serverWs) {{ try {{ serverWs.close(); }} catch (_) {{}} }}
+    }};
+
+    return response;
+  }}
+
+  // Regular HTTP request
   try {{
-    return await fetch(new Request(targetUrl, fetchInit));
+    return await fetch(new Request(targetUrl, {{
+      method: request.method,
+      headers,
+      body: request.body,
+      redirect: "follow",
+    }}));
   }} catch (err) {{
     return new Response(`Proxy Error: ${{err.message}}`, {{ status: 502 }});
   }}

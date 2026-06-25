@@ -13,16 +13,32 @@ let WebSocket;
 try {
   ({ WebSocket } = require('ws'));
 } catch (_) {
-  ({ WebSocket } = require('/home/node/.openclaw/openclaw-app/node_modules/ws'));
+  try {
+    // Fallback: resolve ws relative to the openclaw app install so we don't
+    // hardcode the HF-specific /home/node/.openclaw path which breaks elsewhere.
+    const wsPath = require.resolve('ws', {
+      paths: [
+        '/home/node/.openclaw/openclaw-app',
+        process.env.OPENCLAW_DIR || '/home/node/.openclaw',
+        process.cwd(),
+        __dirname,
+      ],
+    });
+    ({ WebSocket } = require(wsPath));
+  } catch (__) {
+    // Last resort: try the well-known HF path
+    ({ WebSocket } = require('/home/node/.openclaw/openclaw-app/node_modules/ws'));
+  }
 }
 const { randomUUID } = require('node:crypto');
 
 const GATEWAY_PORT = Number.parseInt(process.env.GATEWAY_PORT || "7860", 10);
-const GATEWAY_URL = `ws://127.0.0.1:${GATEWAY_PORT}`;
+const GATEWAY_HOST = process.env.GATEWAY_HOST || "127.0.0.1";
+const GATEWAY_URL = `ws://${GATEWAY_HOST}:${GATEWAY_PORT}`;
 const GATEWAY_TOKEN = process.env.GATEWAY_TOKEN || "huggingclaw";
 const WHATSAPP_ENABLED = /^true$/i.test(process.env.WHATSAPP_ENABLED || "");
-const CHECK_INTERVAL = 30000;
-const WAIT_TIMEOUT = 120000;
+const CHECK_INTERVAL = Number.parseInt(process.env.WA_CHECK_INTERVAL_MS || "30000", 10);
+const WAIT_TIMEOUT = Number.parseInt(process.env.WA_WAIT_TIMEOUT_MS || "120000", 10);
 const POST_515_NO_LOGOUT_MS = 90 * 1000;
 const SUCCESS_COOLDOWN_MS = 60 * 1000;
 const RESET_MARKER_PATH = path.join(
@@ -121,7 +137,13 @@ async function createConnection() {
       }
     });
 
-    ws.on("error", (e) => { if (!resolved) reject(e); });
+    ws.on("error", (e) => {
+      if (!resolved) {
+        resolved = true;
+        // Wrap non-Error rejections so callsites always receive a proper Error.
+        reject(e instanceof Error ? e : new Error(String(e && e.message ? e.message : e)));
+      }
+    });
     // FIX: set resolved=true before ws.close() so the error listener above does not
     // fire a second reject when close() triggers a WebSocket error event (double-reject).
     setTimeout(() => { if (!resolved) { resolved = true; ws.close(); reject(new Error("Timeout")); } }, 10000);
