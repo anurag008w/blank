@@ -251,20 +251,46 @@ async function handleRequest(request) {{
       .replace(/^https:\/\//i, "wss://")
       .replace(/^http:\/\//i,  "ws://");
 
+    // Forward Sec-WebSocket-Protocol if the client sent one (required by some
+    // upstreams; e.g. WhatsApp's Noise protocol negotiation).
+    const wsProtoHeader = request.headers.get("Sec-WebSocket-Protocol");
+    const wsProtocols = wsProtoHeader
+      ? wsProtoHeader.split(",").map((p) => p.trim()).filter(Boolean)
+      : [];
+
     let serverWs = null;
+    // Buffer client→server frames that arrive before the upstream connection
+    // opens.  Without this, the first Noise/protocol handshake frame sent by
+    // Baileys (WhatsApp) is dropped because clientSocket.onmessage was only
+    // wired up inside serverWs.onopen — too late.  The dropped frame causes
+    // WhatsApp to time out and close the socket, which Baileys surfaces as
+    // "Non-Error rejection" / "connection ended before fully opening".
+    const msgBuffer = [];
 
     clientSocket.onopen = () => {{
+      // Wire up the client→server handler IMMEDIATELY so no early frames are
+      // lost.  Messages arriving before the upstream is ready go into the
+      // buffer and are flushed once serverWs.onopen fires.
+      clientSocket.onmessage = (e) => {{
+        if (serverWs && serverWs.readyState === WebSocket.OPEN) {{
+          serverWs.send(e.data);
+        }} else {{
+          msgBuffer.push(e.data);
+        }}
+      }};
+
       try {{
-        serverWs = new WebSocket(wsTargetUrl);
+        serverWs = wsProtocols.length
+          ? new WebSocket(wsTargetUrl, wsProtocols)
+          : new WebSocket(wsTargetUrl);
         serverWs.binaryType = "arraybuffer";
 
         serverWs.onopen = () => {{
-          // Wire up client → server forwarding now that server is ready
-          clientSocket.onmessage = (e) => {{
-            if (serverWs.readyState === WebSocket.OPEN) {{
-              serverWs.send(e.data);
-            }}
-          }};
+          // Flush buffered frames that arrived before the upstream was ready.
+          for (const msg of msgBuffer) {{
+            serverWs.send(msg);
+          }}
+          msgBuffer.length = 0;
         }};
 
         serverWs.onmessage = (e) => {{
