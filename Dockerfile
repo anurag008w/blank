@@ -144,6 +144,15 @@ RUN mkdir -p /home/node/browser-deps && \
 RUN ln -s /home/node/.openclaw/openclaw-app/openclaw.mjs /usr/local/bin/openclaw 2>/dev/null || \
     npm install -g openclaw@${OPENCLAW_VERSION}
 
+# Install GOST v3 — baked into image so Space restarts don't need to re-download
+# HF Spaces always runs linux/amd64; GOST_VERSION can be overridden at build time.
+ARG GOST_VERSION=3.2.6
+RUN set -e; \
+    GOST_URL="https://github.com/go-gost/gost/releases/download/v${GOST_VERSION}/gost_${GOST_VERSION}_linux_amd64.tar.gz"; \
+    curl -fsSL "$GOST_URL" | tar xz -C /usr/local/bin/ gost && \
+    chmod +x /usr/local/bin/gost && \
+    ln -s /usr/local/bin/gost /opt/gost 2>/dev/null || true
+
 # Copy HuggingClaw files
 COPY --chown=1000:1000 gost-proxy.js /opt/gost-proxy.js
 COPY --chown=1000:1000 gost-proxy-setup.py /home/node/app/gost-proxy-setup.py

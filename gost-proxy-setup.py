@@ -43,7 +43,10 @@ GOST_PROXY_DEBUG     = os.environ.get("GOST_PROXY_DEBUG", "false").strip().lower
 )
 
 # ── Paths ──────────────────────────────────────────────────────────────────
-GOST_BINARY = Path("/opt/gost")
+# Prefer the baked-in binary; fall back to downloaded copy for dev environments
+_SYSTEM_GOST = Path("/usr/local/bin/gost")
+_OPT_GOST    = Path("/opt/gost")
+GOST_BINARY  = _SYSTEM_GOST if _SYSTEM_GOST.exists() else _OPT_GOST
 GOST_LOG    = Path("/tmp/gost.log")
 GOST_ENV    = Path("/tmp/huggingclaw-gost-proxy.env")
 GOST_PID    = Path("/tmp/huggingclaw-gost.pid")
@@ -127,7 +130,7 @@ def build_cmd() -> list[str]:
       Forwarder: socks5://host:port    (upstream to chain through)
                  http://user:pass@host:port
     """
-    listener = f"http://::{GOST_PROXY_PORT}"   # bind all interfaces
+    listener = f"http://127.0.0.1:{GOST_PROXY_PORT}"  # localhost only
 
     cmd = [str(GOST_BINARY), "-L", listener]
 
