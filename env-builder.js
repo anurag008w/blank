@@ -1251,28 +1251,29 @@ const FIELDS = [
 {
     "g": "Integrations",
     "icon": "🔌",
-    "k": "CLOUDFLARE_KEEPALIVE_URL",
-    "lbl": "Keepalive worker URL",
-    "type": "text",
-    "ph": "https://your-worker.workers.dev",
-    "tag": "feature"
+    "k": "CRONJOB_API_KEY",
+    "lbl": "cron-job.org API key (keep-awake)",
+    "type": "password",
+    "ph": "",
+    "common": 1,
+    "tag": "credential"
   },
 {
     "g": "Integrations",
     "icon": "🔌",
-    "k": "CLOUDFLARE_KEEPALIVE_WORKER_NAME",
-    "lbl": "Keepalive worker name",
+    "k": "CLOUDFLARE_KEEPALIVE_URL",
+    "lbl": "Keep-awake ping URL (optional override)",
     "type": "text",
-    "ph": "huggingclaw-keepalive",
+    "ph": "https://your-space.hf.space/health",
     "tag": "feature"
   },
 {
     "g": "Integrations",
     "icon": "🔌",
     "k": "CLOUDFLARE_KEEPALIVE_CRON",
-    "lbl": "Keepalive cron schedule",
+    "lbl": "Keep-awake cron schedule",
     "type": "text",
-    "ph": "*/5 * * * *",
+    "ph": "*/10 * * * *",
     "tag": "advanced"
   },
 {
