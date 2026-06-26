@@ -153,9 +153,20 @@ RUN set -e; \
     chmod +x /usr/local/bin/gost && \
     ln -s /usr/local/bin/gost /opt/gost 2>/dev/null || true
 
+# Install Tailscale — baked into image (same reason as GOST; avoids runtime download)
+# tailscale-setup.py checks /opt/tailscale/ first and skips download if binaries exist.
+ARG TAILSCALE_VERSION=1.98.4
+RUN set -e; \
+    TS_URL="https://pkgs.tailscale.com/stable/tailscale_${TAILSCALE_VERSION}_linux_amd64.tgz"; \
+    mkdir -p /opt/tailscale; \
+    curl -fsSL "$TS_URL" | tar xz --wildcards --strip-components=1 \
+         -C /opt/tailscale '*/tailscale' '*/tailscaled'; \
+    chmod +x /opt/tailscale/tailscale /opt/tailscale/tailscaled
+
 # Copy HuggingClaw files
 COPY --chown=1000:1000 gost-proxy.js /opt/gost-proxy.js
 COPY --chown=1000:1000 gost-proxy-setup.py /home/node/app/gost-proxy-setup.py
+COPY --chown=1000:1000 tailscale-setup.py /home/node/app/tailscale-setup.py
 COPY --chown=1000:1000 health-server.js /home/node/app/health-server.js
 COPY --chown=1000:1000 login.html /home/node/app/login.html
 COPY --chown=1000:1000 iframe-fix.cjs /home/node/app/iframe-fix.cjs
@@ -171,6 +182,7 @@ COPY --chown=1000:1000 jupyter-devdata-sync.py /home/node/app/jupyter-devdata-sy
 RUN python3 -c "from pathlib import Path; import shutil, jupyter_server; d=Path(jupyter_server.__file__).parent/'templates'; d.mkdir(parents=True,exist_ok=True); shutil.copyfile('/home/node/app/login.html', d/'login.html')"
 RUN chmod +x /home/node/app/start.sh \
               /home/node/app/gost-proxy-setup.py \
+              /home/node/app/tailscale-setup.py \
               /home/node/app/cronjob-keepalive-setup.py \
               /home/node/app/openclaw-sync.py \
               /home/node/app/jupyter-devdata-sync.py \
