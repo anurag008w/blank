@@ -71,7 +71,7 @@ load_env_bundle
 hc_clean_node_options_value() {
   local cleaned=" ${1:-} "
   local preload pattern
-  for preload in "/opt/cloudflare-proxy.js" "${IFRAME_FIX_PRELOAD:-}" "${KEY_ROTATOR_PRELOAD:-}"; do
+  for preload in "/opt/gost-proxy.js" "${IFRAME_FIX_PRELOAD:-}" "${KEY_ROTATOR_PRELOAD:-}"; do
     [ -n "$preload" ] || continue
     pattern="--require ${preload} "; cleaned="${cleaned//$pattern/ }"
     pattern="--require=${preload} "; cleaned="${cleaned//$pattern/ }"
@@ -97,7 +97,7 @@ LLM_FALLBACK_MODELS="$(trim_var "${LLM_FALLBACK_MODELS:-}")"
 GATEWAY_TOKEN="$(trim_var "${GATEWAY_TOKEN:-}")"
 OPENCLAW_PASSWORD="$(trim_var "${OPENCLAW_PASSWORD:-}")"
 LLM_API_KEY="$(trim_var "${LLM_API_KEY:-}")"
-CLOUDFLARE_PROXY_URL="$(trim_var "${CLOUDFLARE_PROXY_URL:-}")"
+GOST_PROXY_URL="$(trim_var "${GOST_PROXY_URL:-}")"
 
 OPENCLAW_VERSION="$(trim_var "${OPENCLAW_VERSION:-latest}")"
 OPENCLAW_RUNTIME_UPGRADE="$(trim_var "${OPENCLAW_RUNTIME_UPGRADE:-true}")"
@@ -666,19 +666,17 @@ else
   echo "HF_TOKEN not set — running without dataset persistence."
 fi
 
-CLOUDFLARE_WORKERS_TOKEN="${CLOUDFLARE_WORKERS_TOKEN:-}"
-export CLOUDFLARE_WORKERS_TOKEN
+GOST_UPSTREAM_PROXY="$(trim_var "${GOST_UPSTREAM_PROXY:-}")"
+export GOST_UPSTREAM_PROXY
 CRONJOB_API_KEY="${CRONJOB_API_KEY:-}"
 export CRONJOB_API_KEY
-CF_PROXY_ENV_FILE="/tmp/huggingclaw-cloudflare-proxy.env"
-if [ -n "${CLOUDFLARE_WORKERS_TOKEN:-}" ] || [ -n "${CLOUDFLARE_PROXY_URL:-}" ]; then
-  # Default debug off for production. Set CLOUDFLARE_PROXY_DEBUG=true in HF
-  # Space secrets to surface per-request "Redirecting" + error-cause logs.
-  export CLOUDFLARE_PROXY_DEBUG="${CLOUDFLARE_PROXY_DEBUG:-false}"
-  echo "Preparing Cloudflare outbound proxy..."
-  python3 /home/node/app/cloudflare-proxy-setup.py || true
-  if [ -f "$CF_PROXY_ENV_FILE" ]; then
-    . "$CF_PROXY_ENV_FILE"
+GOST_ENV_FILE="/tmp/huggingclaw-gost-proxy.env"
+if [ -n "${GOST_UPSTREAM_PROXY:-}" ] || [ -n "${GOST_PROXY_URL:-}" ]; then
+  export GOST_PROXY_DEBUG="${GOST_PROXY_DEBUG:-false}"
+  echo "Preparing GOST outbound proxy..."
+  python3 /home/node/app/gost-proxy-setup.py || true
+  if [ -f "$GOST_ENV_FILE" ]; then
+    . "$GOST_ENV_FILE"
   fi
 fi
 
@@ -1296,7 +1294,7 @@ fi
 resolve_telegram_api_root() {
   local candidate="$(trim_var "${TELEGRAM_API_ROOT:-}")"
   if [ -z "$candidate" ]; then
-    candidate="$(trim_var "${CLOUDFLARE_PROXY_URL:-}")"
+    candidate="$(trim_var "${GOST_PROXY_URL:-}")"
   fi
   if [ -n "$candidate" ]; then
     case "$candidate" in
@@ -1519,7 +1517,7 @@ if [ -f "$EXISTING_CONFIG" ]; then
        end
      | if $telegramConfigured then
          # Merge: existing * desired → desired (env-driven) wins for runtime fields
-         # (apiRoot from CLOUDFLARE_PROXY_URL, commands.native, timeoutSeconds, retry).
+         # (apiRoot from TELEGRAM_API_ROOT/GOST_PROXY_URL, commands.native, timeoutSeconds, retry).
          # Then re-apply user-editable fields from saved $existingTelegram so UI
          # customizations (dmPolicy, allowFrom) survive across reboots.
          .channels.telegram = ($existingTelegram * ($desired.channels.telegram // {}))
@@ -1590,8 +1588,8 @@ if [ -n "${HF_TOKEN:-}" ]; then
 else
   echo "Backup    : disabled"
 fi
-if [ -n "${CLOUDFLARE_PROXY_URL:-}" ]; then
-  echo "Proxy     : ${CLOUDFLARE_PROXY_URL}"
+if [ -n "${GOST_PROXY_URL:-}" ]; then
+  echo "Proxy     : ${GOST_PROXY_URL}"
 fi
 # HUGGINGCLAW_JUPYTER_ENABLED env var se override allow karo
 # (env-builder "Enable Jupyter terminal" toggle yahi set karta hai)
