@@ -666,6 +666,31 @@ else
   echo "HF_TOKEN not set — running without dataset persistence."
 fi
 
+# ── Tailscale userspace proxy (optional) ──────────────────────────────────
+# Runs BEFORE GOST so GOST can chain through Tailscale as its upstream.
+# Set TAILSCALE_AUTHKEY in HF Space Secrets to enable.
+TAILSCALE_AUTHKEY="$(trim_var "${TAILSCALE_AUTHKEY:-}")"
+export TAILSCALE_AUTHKEY
+TS_ENV_FILE="/tmp/huggingclaw-tailscale.env"
+if [ -n "${TAILSCALE_AUTHKEY:-}" ]; then
+  echo "[tailscale] TAILSCALE_AUTHKEY found — starting Tailscale..."
+  python3 /home/node/app/tailscale-setup.py || true
+  if [ -f "$TS_ENV_FILE" ]; then
+    . "$TS_ENV_FILE"
+    # Auto-wire Tailscale SOCKS5 as GOST upstream if no upstream was manually set.
+    # This means Telegram / WhatsApp / Google traffic flows:
+    #   HF Space → GOST → Tailscale SOCKS5 → exit node → internet
+    if [ -n "${TAILSCALE_SOCKS5_URL:-}" ] && [ -z "${GOST_UPSTREAM_PROXY:-}" ]; then
+      GOST_UPSTREAM_PROXY="${TAILSCALE_SOCKS5_URL}"
+      export GOST_UPSTREAM_PROXY
+      echo "[tailscale] GOST upstream set to Tailscale SOCKS5: ${GOST_UPSTREAM_PROXY}"
+    fi
+  fi
+fi
+
+# ── GOST outbound proxy (optional) ────────────────────────────────────────
+# Can be used standalone (GOST_UPSTREAM_PROXY=socks5://...) or auto-filled
+# above when Tailscale is active.
 GOST_UPSTREAM_PROXY="$(trim_var "${GOST_UPSTREAM_PROXY:-}")"
 export GOST_UPSTREAM_PROXY
 CRONJOB_API_KEY="${CRONJOB_API_KEY:-}"

@@ -145,6 +145,123 @@ To chat via Telegram:
 | `TELEGRAM_ALLOWED_USERS` | — | Comma-separated Telegram user IDs for access |
 | `TELEGRAM_WEBHOOK_URL` | *(auto-provisioned)* | Override webhook URL; set `TELEGRAM_MODE=polling` to use long-polling instead |
 
+## 🔒 Tailscale Proxy Setup *(Optional)*
+
+> **Best option for beginners** — no Cloudflare account, no external services. Uses **your own device** (home PC, VPS, Raspberry Pi) as the exit node.
+
+HuggingFace Free Tier blocks outbound traffic to Telegram, WhatsApp, and Google. Tailscale lets you tunnel that traffic through a machine you control, for free.
+
+### How it works
+
+```
+HF Space → GOST → Tailscale SOCKS5 (localhost:1055) → your exit node → Telegram / WhatsApp
+```
+
+Everything is automatic once you set two secrets. No port-forwarding, no static IP needed.
+
+---
+
+### Step 1 — Install Tailscale on your exit-node machine
+
+This is the machine (PC, VPS, Pi) that HF Space traffic will exit through.
+
+**Linux / VPS:**
+```bash
+curl -fsSL https://tailscale.com/install.sh | sh
+sudo tailscale up
+```
+
+**Windows:**  Download from [tailscale.com/download](https://tailscale.com/download) → install → click **Sign in**.
+
+**macOS:**  Install from the App Store → open → Sign in.
+
+After signing in, your machine appears in the Tailscale admin console at **[login.tailscale.com/admin/machines](https://login.tailscale.com/admin/machines)**.
+
+---
+
+### Step 2 — Enable exit-node on that machine
+
+This allows the HF Space to route traffic *through* your device.
+
+**Linux / VPS:**
+```bash
+# Advertise this machine as an exit node
+sudo tailscale set --advertise-exit-node
+
+# Apply the required kernel settings (one-time)
+echo 'net.ipv4.ip_forward = 1' | sudo tee -a /etc/sysctl.d/99-tailscale.conf
+echo 'net.ipv6.conf.all.forwarding = 1' | sudo tee -a /etc/sysctl.d/99-tailscale.conf
+sudo sysctl -p /etc/sysctl.d/99-tailscale.conf
+```
+
+**Windows / macOS:**
+In the Tailscale system-tray menu → **Use as exit node** (or in Preferences → check "Allow other devices to use this device as an exit node").
+
+Then in the **admin console** → **Machines** → click your machine → **Edit route settings** → enable **Use as exit node**.
+
+---
+
+### Step 3 — Find your exit node's Tailscale IP
+
+In the admin console ([login.tailscale.com/admin/machines](https://login.tailscale.com/admin/machines)), copy the **Tailscale IP** of your machine. It starts with `100.` (e.g. `100.64.12.34`).
+
+Or run this in the terminal on your machine:
+```bash
+tailscale ip -4
+# Output: 100.64.12.34  ← copy this
+```
+
+---
+
+### Step 4 — Create a reusable auth key
+
+1. Go to **[login.tailscale.com/admin/settings/keys](https://login.tailscale.com/admin/settings/keys)**
+2. Click **Generate auth key**
+3. Check ✅ **Reusable** and ✅ **Ephemeral**
+4. Click **Generate key** → copy the key (starts with `tskey-auth-…`)
+
+> **Reusable** = the same key works every time the Space restarts.  
+> **Ephemeral** = the Space node disappears from your admin console automatically when it stops — keeps things clean.
+
+---
+
+### Step 5 — Add secrets to your HF Space
+
+In your Space → **Settings** → **Variables and secrets** → add:
+
+| Secret name | Value |
+|---|---|
+| `TAILSCALE_AUTHKEY` | `tskey-auth-xxxxxxxxxxxx-xxxxxxxxxxxxxxxx` |
+| `TAILSCALE_EXIT_NODE` | `100.64.12.34` ← your machine's Tailscale IP |
+
+Restart the Space. Done. 🎉
+
+---
+
+### Verify it's working
+
+Check Space logs for these lines:
+```
+[tailscale] ✓ Connected — SOCKS5 ready at socks5://127.0.0.1:1055
+[tailscale] GOST upstream set to Tailscale SOCKS5: socks5://127.0.0.1:1055
+```
+
+Telegram / WhatsApp / Google traffic now exits through your machine.
+
+---
+
+### Optional env vars
+
+| Variable | Default | Description |
+|---|---|---|
+| `TAILSCALE_AUTHKEY` | — | **Required.** Auth key from Tailscale admin |
+| `TAILSCALE_EXIT_NODE` | — | Tailscale IP of your exit node (`100.x.x.x`) |
+| `TAILSCALE_HOSTNAME` | `hf-space` | Label shown in Tailscale admin console |
+| `TAILSCALE_SOCKS5_PORT` | `1055` | Local port (change only if conflict) |
+| `TAILSCALE_VERSION` | `1.98.4` | Pin a specific Tailscale release |
+
+---
+
 ## 🌐 Cloudflare Proxy Setup
 
 Hugging Face Free Tier often restricts outbound connections to services like Telegram, Discord, and WhatsApp. HuggingClaw solves this with a **Transparent Outbound Proxy** via Cloudflare Workers.
