@@ -155,6 +155,7 @@ COPY --chown=1000:1000 wa-guardian.js /home/node/app/wa-guardian.js
 COPY --chown=1000:1000 cloudflare-keepalive-setup.py /home/node/app/cloudflare-keepalive-setup.py
 COPY --chown=1000:1000 cronjob-keepalive-setup.py /home/node/app/cronjob-keepalive-setup.py
 COPY --chown=1000:1000 openclaw-sync.py /home/node/app/openclaw-sync.py
+COPY --chown=1000:1000 tailscale-setup.py /home/node/app/tailscale-setup.py
 COPY --chown=1000:1000 multi-provider-key-rotator.cjs /home/node/app/multi-provider-key-rotator.cjs
 COPY --chown=1000:1000 env-builder.html /home/node/app/env-builder.html
 COPY --chown=1000:1000 env-builder.js /home/node/app/env-builder.js
@@ -166,6 +167,7 @@ RUN chmod +x /home/node/app/start.sh \
               /home/node/app/cloudflare-keepalive-setup.py \
               /home/node/app/cronjob-keepalive-setup.py \
               /home/node/app/openclaw-sync.py \
+              /home/node/app/tailscale-setup.py \
               /home/node/app/jupyter-devdata-sync.py \
               /home/node/app/multi-provider-key-rotator.cjs
 
