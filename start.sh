@@ -668,6 +668,8 @@ fi
 
 CLOUDFLARE_WORKERS_TOKEN="${CLOUDFLARE_WORKERS_TOKEN:-}"
 export CLOUDFLARE_WORKERS_TOKEN
+CRONJOB_API_KEY="${CRONJOB_API_KEY:-}"
+export CRONJOB_API_KEY
 CF_PROXY_ENV_FILE="/tmp/huggingclaw-cloudflare-proxy.env"
 if [ -n "${CLOUDFLARE_WORKERS_TOKEN:-}" ] || [ -n "${CLOUDFLARE_PROXY_URL:-}" ]; then
   # Default debug off for production. Set CLOUDFLARE_PROXY_DEBUG=true in HF
