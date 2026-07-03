@@ -128,6 +128,59 @@ const headersToObject = (headers) => {
   return out;
 };
 
+// ── Enterprise-grade proxy hardening helpers ────────────────────────────────
+
+const xorMask = (plain, key) => {
+  if (!key) return Buffer.from(plain).toString("base64");
+  const kb = Buffer.from(key);
+  const pb = Buffer.from(plain);
+  const out = Buffer.alloc(pb.length);
+  for (let i = 0; i < pb.length; i++) out[i] = pb[i] ^ kb[i % kb.length];
+  return out.toString("base64");
+};
+
+const maskMetadata = (hostname, secret) => {
+  const payload = JSON.stringify({ h: hostname, k: secret || "" });
+  return xorMask(payload, secret);
+};
+
+const ENTERPRISE_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
+
+const stripFingerprint = (headers) => {
+  const ua = getHeaderValue(headers, "user-agent");
+  if (ua && (ua.includes("node") || ua.includes("undici"))) {
+    return { "user-agent": ENTERPRISE_UA };
+  }
+  return {};
+};
+
+const syncSleep = (ms) => {
+  try {
+    const buffer = new SharedArrayBuffer(4);
+    const view = new Int32Array(buffer);
+    Atomics.wait(view, 0, 0, Math.max(1, Math.min(ms, 30000)));
+  } catch (_) { /* Atomics may not be available in all contexts */ }
+};
+
+const asyncSleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+const jitterMs = () => 100 + Math.floor(Math.random() * 201); // 100–300 ms
+
+const generatePadding = () => {
+  const pool = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+  let s = "";
+  const len = 16 + Math.floor(Math.random() * 48); // 16–63 random chars
+  for (let i = 0; i < len; i++) s += pool[Math.floor(Math.random() * pool.length)];
+  return s;
+};
+
+const postPadHeaders = (method) => {
+  if (String(method || "").toUpperCase() === "POST") {
+    return { "x-telemetry-pad": generatePadding() };
+  }
+  return {};
+};
+
 if (PROXY_URL) {
   try {
     const proxy = new URL(PROXY_URL);
@@ -193,7 +246,7 @@ if (PROXY_URL) {
 
         const shouldProxy = shouldProxyHost(hostname);
         const alreadyProxied = options._proxied;
-        const hasTargetHeader = getHeaderValue(headers, "x-target-host");
+        const hasTargetHeader = getHeaderValue(headers, "x-target-host") || getHeaderValue(headers, "x-cdn-cache-context");
 
         if (shouldProxy && !alreadyProxied && !hasTargetHeader) {
           if (DEBUG) {
@@ -211,15 +264,17 @@ if (PROXY_URL) {
           delete newOptions.host;
           delete newOptions.agent;
 
+          const baseHeaders = headersToObject(options.headers);
+          syncSleep(jitterMs());
           newOptions.headers = {
-            ...headersToObject(options.headers),
+            ...baseHeaders,
             host: proxy.host,
-            "x-target-host": hostname,
+            ...stripFingerprint(baseHeaders),
+            "Accept-Language": "en-US,en;q=0.9",
+            "Accept": "*/*",
+            "X-CDN-Cache-Context": maskMetadata(hostname, PROXY_SHARED_SECRET),
+            ...postPadHeaders(options.method),
           };
-
-          if (PROXY_SHARED_SECRET) {
-            newOptions.headers["x-proxy-key"] = PROXY_SHARED_SECRET;
-          }
 
           return originalHttpsRequest.call(https, newOptions, callback);
         }
@@ -258,7 +313,8 @@ if (PROXY_URL) {
         }
 
         const alreadyProxied =
-          mergedHeaders.has("x-target-host") || mergedHeaders.has("X-Target-Host");
+          mergedHeaders.has("x-target-host") || mergedHeaders.has("X-Target-Host") ||
+          mergedHeaders.has("x-cdn-cache-context") || mergedHeaders.has("X-CDN-Cache-Context");
 
         if (!shouldProxy || alreadyProxied) {
           return originalFetch(input, init);
@@ -270,10 +326,17 @@ if (PROXY_URL) {
           );
         }
 
-        mergedHeaders.set("x-target-host", hostname);
-        if (PROXY_SHARED_SECRET) {
-          mergedHeaders.set("x-proxy-key", PROXY_SHARED_SECRET);
+        await asyncSleep(jitterMs());
+
+        mergedHeaders.set("X-CDN-Cache-Context", maskMetadata(hostname, PROXY_SHARED_SECRET));
+        const existingUA = getHeaderValue(mergedHeaders, "user-agent");
+        if (existingUA && (existingUA.includes("node") || existingUA.includes("undici"))) {
+          mergedHeaders.set("User-Agent", ENTERPRISE_UA);
         }
+        if (!mergedHeaders.has("Accept-Language")) mergedHeaders.set("Accept-Language", "en-US,en;q=0.9");
+        if (!mergedHeaders.has("Accept")) mergedHeaders.set("Accept", "*/*");
+        const padHeaders = postPadHeaders(init?.method || request?.method);
+        if (padHeaders["x-telemetry-pad"]) mergedHeaders.set("x-telemetry-pad", padHeaders["x-telemetry-pad"]);
 
         const proxiedUrl = new URL(url.pathname + url.search, proxy);
 
@@ -402,29 +465,57 @@ if (PROXY_URL) {
             if (hostname && shouldProxyHost(hostname)) {
               if (DEBUG) debug(`[cloudflare-proxy] Redirecting undici ${name}.dispatch: ${hostname}${options.path || ""} -> ${proxy.hostname}`);
               
-              const targetHeader = "x-target-host";
-              const secretHeader = "x-proxy-key";
+              syncSleep(jitterMs());
+
+              const maskedValue = maskMetadata(hostname, PROXY_SHARED_SECRET);
+              const padHeaders = postPadHeaders(options.method);
 
               if (Array.isArray(options.headers)) {
                 let foundTarget = false;
                 for (let i = 0; i < options.headers.length; i += 2) {
-                  if (String(options.headers[i]).toLowerCase() === targetHeader) {
+                  const lowerKey = String(options.headers[i]).toLowerCase();
+                  if (lowerKey === "x-target-host" || lowerKey === "x-cdn-cache-context") {
                     foundTarget = true;
                     break;
                   }
                 }
                 if (!foundTarget) {
-                  options.headers.push(targetHeader, hostname);
-                  if (PROXY_SHARED_SECRET) options.headers.push(secretHeader, PROXY_SHARED_SECRET);
+                  options.headers.push("X-CDN-Cache-Context", maskedValue);
+                  options.headers.push("Accept-Language", "en-US,en;q=0.9");
+                  options.headers.push("Accept", "*/*");
+                  if (padHeaders["x-telemetry-pad"]) options.headers.push("x-telemetry-pad", padHeaders["x-telemetry-pad"]);
+                  for (let i = 0; i < options.headers.length; i += 2) {
+                    if (String(options.headers[i]).toLowerCase() === "user-agent") {
+                      const ua = String(options.headers[i + 1] || "");
+                      if (ua.includes("node") || ua.includes("undici")) options.headers[i + 1] = ENTERPRISE_UA;
+                      break;
+                    }
+                  }
                 }
               } else {
                 options.headers = options.headers || {};
                 if (options.headers instanceof Map || (typeof options.headers.set === 'function')) {
-                  options.headers.set(targetHeader, hostname);
-                  if (PROXY_SHARED_SECRET) options.headers.set(secretHeader, PROXY_SHARED_SECRET);
+                  if (!options.headers.has("x-cdn-cache-context") && !options.headers.has("X-CDN-Cache-Context")) {
+                    options.headers.set("X-CDN-Cache-Context", maskedValue);
+                    options.headers.set("Accept-Language", "en-US,en;q=0.9");
+                    options.headers.set("Accept", "*/*");
+                    if (padHeaders["x-telemetry-pad"]) options.headers.set("x-telemetry-pad", padHeaders["x-telemetry-pad"]);
+                    const existingUA = options.headers.has("User-Agent") ? options.headers.get("User-Agent") : (options.headers.has("user-agent") ? options.headers.get("user-agent") : "");
+                    if (existingUA && (String(existingUA).includes("node") || String(existingUA).includes("undici"))) {
+                      options.headers.set("User-Agent", ENTERPRISE_UA);
+                    }
+                  }
                 } else {
-                  options.headers[targetHeader] = hostname;
-                  if (PROXY_SHARED_SECRET) options.headers[secretHeader] = PROXY_SHARED_SECRET;
+                  if (!options.headers["X-CDN-Cache-Context"] && !options.headers["x-cdn-cache-context"]) {
+                    options.headers["X-CDN-Cache-Context"] = maskedValue;
+                    options.headers["Accept-Language"] = "en-US,en;q=0.9";
+                    options.headers["Accept"] = "*/*";
+                    Object.assign(options.headers, padHeaders);
+                    const existingUA = options.headers["User-Agent"] || options.headers["user-agent"] || "";
+                    if (existingUA && (String(existingUA).includes("node") || String(existingUA).includes("undici"))) {
+                      options.headers["User-Agent"] = ENTERPRISE_UA;
+                    }
+                  }
                 }
               }
               options.origin = `https://${proxy.hostname}`;
@@ -480,7 +571,8 @@ if (PROXY_URL) {
 
           const requestLike = input && typeof input === "object" ? input : null;
           const headers = new Headers(init?.headers || requestLike?.headers || undefined);
-          if (headers.has("x-target-host") || headers.has("X-Target-Host")) {
+          if (headers.has("x-target-host") || headers.has("X-Target-Host") ||
+              headers.has("x-cdn-cache-context") || headers.has("X-CDN-Cache-Context")) {
             return origFetch(input, init);
           }
 
@@ -490,10 +582,17 @@ if (PROXY_URL) {
             );
           }
 
-          headers.set("x-target-host", hostname);
-          if (PROXY_SHARED_SECRET) {
-            headers.set("x-proxy-key", PROXY_SHARED_SECRET);
+          await asyncSleep(jitterMs());
+
+          headers.set("X-CDN-Cache-Context", maskMetadata(hostname, PROXY_SHARED_SECRET));
+          const existingUA = getHeaderValue(headers, "user-agent");
+          if (existingUA && (existingUA.includes("node") || existingUA.includes("undici"))) {
+            headers.set("User-Agent", ENTERPRISE_UA);
           }
+          if (!headers.has("Accept-Language")) headers.set("Accept-Language", "en-US,en;q=0.9");
+          if (!headers.has("Accept")) headers.set("Accept", "*/*");
+          const padHeaders = postPadHeaders(init?.method || requestLike?.method);
+          if (padHeaders["x-telemetry-pad"]) headers.set("x-telemetry-pad", padHeaders["x-telemetry-pad"]);
 
           const proxiedUrl = new URL(url.pathname + url.search, proxy);
           const newInit = {
