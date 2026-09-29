@@ -22,11 +22,18 @@ ARG OPENCLAW_VERSION=latest
 FROM ghcr.io/openclaw/openclaw:${OPENCLAW_VERSION} AS openclaw
 
 # ── Stage 2: Runtime ──
-# OpenClaw >= the version that shipped the node:sqlite embedded-NUL guard refuses to
-# run on Node 22 (nodejs/node#61954 truncates TEXT at an embedded NUL). It requires
-# 24.16+ / 26.1+. Pinned exactly so a floating tag can never silently downgrade us
-# back into the "Gateway failed - DEV_MODE active, retrying in 10s..." loop again.
-FROM node:24.21.0-slim
+# Node 26 is OpenClaw's recommended runtime: it starts the Gateway noticeably
+# faster and uses less memory than Node 24, which matters on a 2 vCPU Space.
+#
+# 26.1.0 is the hard floor — 26.0.0 still truncated node:sqlite TEXT at an
+# embedded NUL (nodejs/node#61954). This satisfies every engines.node range
+# OpenClaw has ever published, so it works across all OpenClaw versions, not
+# just current ones.
+#
+# Pinned exactly, never a floating tag, so the base image can never drift back
+# into the range that produced the endless "Gateway failed - DEV_MODE active,
+# retrying in 10s..." loop. verify-node-runtime.mjs below proves the pairing.
+FROM node:26.10.0-slim
 ARG OPENCLAW_VERSION=latest
 ARG DEV_MODE=false
 ARG HUGGINGCLAW_FULL_SUDO=false
