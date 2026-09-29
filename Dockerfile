@@ -8,12 +8,17 @@
 # ════════════════════════════════════════════════════════════════
 
 # ── Stage 1: Pull pre-built OpenClaw ──
-# Pinned deliberately. Stage 1 (OpenClaw) and stage 2 (Node) are versioned
-# independently, so a floating `latest` silently raised its Node floor to
-# ">=24.16.0 <25 || >=26.1.0" in v2026.9.3 while this image stayed on Node 22,
-# which broke the Gateway at runtime with no build-time signal.
-# To upgrade: bump this, then the build gate below re-validates the pairing.
-ARG OPENCLAW_VERSION=2026.9.6
+# This is only the version BAKED into the image. The effective version is
+# controlled by the OPENCLAW_VERSION environment variable, which start.sh
+# honours at container start (see "Runtime OpenClaw upgrade" in start.sh) —
+# set it to "latest" or any tag in your HF Space Variables and no rebuild of
+# this file is needed.
+#
+# Kept at "latest" on purpose. The build gate below is what makes that safe:
+# it refuses to build an image whose Node runtime cannot run this OpenClaw, so
+# a future OpenClaw release that raises its Node floor fails the build loudly
+# instead of shipping a Gateway that silently retries forever.
+ARG OPENCLAW_VERSION=latest
 FROM ghcr.io/openclaw/openclaw:${OPENCLAW_VERSION} AS openclaw
 
 # ── Stage 2: Runtime ──
@@ -22,7 +27,7 @@ FROM ghcr.io/openclaw/openclaw:${OPENCLAW_VERSION} AS openclaw
 # 24.16+ / 26.1+. Pinned exactly so a floating tag can never silently downgrade us
 # back into the "Gateway failed - DEV_MODE active, retrying in 10s..." loop again.
 FROM node:24.21.0-slim
-ARG OPENCLAW_VERSION=2026.9.6
+ARG OPENCLAW_VERSION=latest
 ARG DEV_MODE=false
 ARG HUGGINGCLAW_FULL_SUDO=false
 
