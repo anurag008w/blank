@@ -2789,6 +2789,14 @@ repair_broken_whatsapp_plugin_entry
 # ── Launch gateway ──
 GATEWAY_RESTART_DELAY="${GATEWAY_RESTART_DELAY:-2}"
 GATEWAY_MAX_RESTARTS="${GATEWAY_MAX_RESTARTS:-0}"
+# Backoff for the "never became ready" path. Relaunching a gateway every 10s
+# on a memory-constrained host keeps the box thrashing: the previous Node
+# process has not finished releasing its heap, so each attempt is slower than
+# the last and the gateway can never win the race against the ready timeout.
+# Doubling up to a ceiling lets memory and CPU actually recover.
+GATEWAY_START_BACKOFF="${GATEWAY_START_BACKOFF:-10}"
+GATEWAY_START_BACKOFF_MAX="${GATEWAY_START_BACKOFF_MAX:-120}"
+GATEWAY_START_BACKOFF_NEXT=0
 GATEWAY_RESTART_COUNT=0
 SYNC_LOOP_PID=""
 GUARDIAN_PID=""
@@ -3017,14 +3025,22 @@ while true; do
     echo "────────────────────────────────────────────"
     tail -30 /home/node/.openclaw/gateway.log
     if [ "$DEV_MODE_ENABLED" = "true" ]; then
-      echo "Gateway failed — DEV_MODE active, retrying in 10s..."
-      sleep 10
+      _backoff_wait=$((GATEWAY_START_BACKOFF * (1 << GATEWAY_START_BACKOFF_NEXT)))
+      [ "$_backoff_wait" -gt "$GATEWAY_START_BACKOFF_MAX" ] && _backoff_wait="$GATEWAY_START_BACKOFF_MAX"
+      echo "Gateway failed — DEV_MODE active, retrying in ${_backoff_wait}s (attempt $((GATEWAY_START_BACKOFF_NEXT + 1)))."
+      sleep "$_backoff_wait"
+      GATEWAY_START_BACKOFF_NEXT=$((GATEWAY_START_BACKOFF_NEXT + 1))
+      [ "$GATEWAY_START_BACKOFF_NEXT" -ge 5 ] && GATEWAY_START_BACKOFF_NEXT=5
       continue
     else
       echo "Gateway failed — exiting."
       exit 1
     fi
   fi
+
+  # Only reached when the gateway actually came up. Reset the backoff so a
+  # later failure starts from the short delay again.
+  GATEWAY_START_BACKOFF_NEXT=0
 
   # 11. Start WhatsApp Guardian after the gateway is accepting connections
   start_guardian_once
