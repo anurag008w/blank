@@ -8,7 +8,12 @@
 # ════════════════════════════════════════════════════════════════
 
 # ── Stage 1: Pull pre-built OpenClaw ──
-ARG OPENCLAW_VERSION=latest
+# Pinned deliberately. Stage 1 (OpenClaw) and stage 2 (Node) are versioned
+# independently, so a floating `latest` silently raised its Node floor to
+# ">=24.16.0 <25 || >=26.1.0" in v2026.9.3 while this image stayed on Node 22,
+# which broke the Gateway at runtime with no build-time signal.
+# To upgrade: bump this, then the build gate below re-validates the pairing.
+ARG OPENCLAW_VERSION=2026.9.6
 FROM ghcr.io/openclaw/openclaw:${OPENCLAW_VERSION} AS openclaw
 
 # ── Stage 2: Runtime ──
@@ -17,9 +22,18 @@ FROM ghcr.io/openclaw/openclaw:${OPENCLAW_VERSION} AS openclaw
 # 24.16+ / 26.1+. Pinned exactly so a floating tag can never silently downgrade us
 # back into the "Gateway failed - DEV_MODE active, retrying in 10s..." loop again.
 FROM node:24.21.0-slim
-ARG OPENCLAW_VERSION=latest
+ARG OPENCLAW_VERSION=2026.9.6
 ARG DEV_MODE=false
 ARG HUGGINGCLAW_FULL_SUDO=false
+
+# Fail the build — not the runtime — if this Node cannot actually run the
+# OpenClaw pulled in stage 1. Checks the Node support table, the node:sqlite
+# NUL round-trip probe, and the WAL-safety of the SQLite library that is really
+# loaded. Runs before the heavy apt layer so a bad pairing costs seconds, not
+# minutes. Without this, a mismatched pair ships an image that only fails later
+# as an endless "Gateway failed - DEV_MODE active, retrying in 10s..." loop.
+COPY --chown=1000:1000 verify-node-runtime.mjs /home/node/verify-node-runtime.mjs
+RUN node /home/node/verify-node-runtime.mjs
 # DEV_MODE intentionally not baked into runtime ENV — defaults to unset so
 # start.sh can auto-enable terminal when GATEWAY_TOKEN is present. Users can
 # override by setting DEV_MODE=false as an HF Space Variable to opt out.
