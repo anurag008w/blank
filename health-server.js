@@ -4,6 +4,7 @@ const https = require("https");
 const fs = require("fs");
 const net = require("net");
 const crypto = require("crypto");
+const { execFile } = require("child_process");
 
 function isTrue(value) {
   return /^(true|1|yes|on)$/i.test(String(value || "").trim());
@@ -42,6 +43,10 @@ const TELEGRAM_ENABLED = !!process.env.TELEGRAM_BOT_TOKEN;
 const WHATSAPP_ENABLED = isTrue(process.env.WHATSAPP_ENABLED);
 const WHATSAPP_STATUS_FILE = "/tmp/huggingclaw-wa-status.json";
 const KEY_ROTATOR_EVENT_LOG_FILE = process.env.KEY_ROTATOR_EVENT_LOG_FILE || "/tmp/huggingclaw-key-rotator-events.jsonl";
+// Presence of this file == "gateway is paused". It is the single source of truth
+// shared with start.sh, so the pause survives gateway restarts and container
+// restarts. start.sh owns the relaunch decision; this file only records intent.
+const GATEWAY_PAUSE_FILE = process.env.GATEWAY_PAUSE_FILE || "/home/node/.openclaw/gateway.paused";
 const HF_BACKUP_ENABLED = !!process.env.HF_TOKEN;
 const SYNC_INTERVAL = (process.env.SYNC_INTERVAL || "180").trim() || "180";
 const BACKUP_DATASET_NAME = (process.env.BACKUP_DATASET_NAME || process.env.BACKUP_DATASET || "huggingclaw-backup").trim() || "huggingclaw-backup";
@@ -238,6 +243,112 @@ function getKeepaliveStatus() {
   return null;
 }
 
+// ── Gateway pause / resume ───────────────────────────────────────────────
+// Verified against OpenClaw's documented shutdown contract:
+//   * SIGINT/SIGTERM are the gateway's graceful stop signals ("the same as
+//     Ctrl+C"), and in-flight work is allowed to finish before exit.
+//   * `openclaw gateway stop` is explicitly REFUSED unless the gateway was
+//     installed as a managed service. HuggingClaw launches the gateway as a
+//     direct child of start.sh, so sending a signal is the correct mechanism.
+//   * A wedged gateway may never complete a graceful stop, so we escalate to
+//     SIGKILL. That is safe: OpenClaw reconciles SQLite-backed background
+//     tasks and orphaned runs on the next boot, and unconsumed inputs are
+//     surfaced as interrupted rather than lost.
+// The pattern is scoped to this gateway's exact argv including its port, so
+// JupyterLab, the health server, the sync loops and the guardian never match.
+function gatewayProcPattern() {
+  return `openclaw gateway run --port ${GATEWAY_PORT}`;
+}
+
+// The gateway is launched as `stdbuf -oL -eL openclaw gateway run --port N ...`,
+// so argv[0] is "stdbuf" and the openclaw tokens start a few positions later.
+// pgrep is only used to shortlist candidates by substring; every candidate is
+// then re-checked against its real /proc argv before any signal is sent. That
+// matters: a loose substring match would also hit a shell, a log tail or a
+// health check whose command line merely mentions this string.
+function isGatewayArgv(argv) {
+  const port = String(GATEWAY_PORT);
+  for (let i = 0; i < argv.length; i++) {
+    if (argv[i] !== "openclaw") continue;
+    if (argv[i + 1] === "gateway" && argv[i + 2] === "run" && argv[i + 3] === "--port" && argv[i + 4] === port) return true;
+  }
+  return false;
+}
+
+function gatewayPids() {
+  return new Promise((resolve) => {
+    execFile("pgrep", ["-f", gatewayProcPattern()], (_err, stdout) => {
+      const pids = String(stdout || "")
+        .split("\n")
+        .map((s) => s.trim())
+        .filter(Boolean)
+        .map((s) => Number.parseInt(s, 10))
+        .filter((pid) => Number.isInteger(pid) && pid > 1 && pid !== process.pid)
+        .filter((pid) => {
+          try {
+            return isGatewayArgv(fs.readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0"));
+          } catch {
+            return false;
+          }
+        });
+      resolve(pids);
+    });
+  });
+}
+
+async function gatewayProcessAlive() {
+  return (await gatewayPids()).length > 0;
+}
+
+async function signalGateway(signal) {
+  const pids = await gatewayPids();
+  let sent = 0;
+  for (const pid of pids) {
+    try {
+      process.kill(pid, signal);
+      sent++;
+    } catch {
+      // Already exited between the scan and the signal.
+    }
+  }
+  return { matched: pids, sent };
+}
+
+async function stopGatewayGracefully() {
+  const first = await signalGateway("SIGTERM");
+  // Let in-flight work finish; escalate only if the gateway is still wedged.
+  await new Promise((resolve) => setTimeout(resolve, 8000));
+  const remaining = await gatewayPids();
+  let escalated = false;
+  for (const pid of remaining) {
+    try {
+      process.kill(pid, "SIGKILL");
+      escalated = true;
+    } catch {
+      // Raced us to exit.
+    }
+  }
+  return { pattern: gatewayProcPattern(), termSent: first.sent, escalated };
+}
+
+function isGatewayPaused() {
+  try {
+    return fs.existsSync(GATEWAY_PAUSE_FILE);
+  } catch {
+    return false;
+  }
+}
+
+function setGatewayPaused(paused) {
+  try {
+    if (paused) fs.writeFileSync(GATEWAY_PAUSE_FILE, `paused at ${new Date().toISOString()}\n`);
+    else fs.rmSync(GATEWAY_PAUSE_FILE, { force: true });
+    return null;
+  } catch (exc) {
+    return exc.message;
+  }
+}
+
 function probePort(host, port, path, timeoutMs = 1500) {
   return new Promise((resolve) => {
     const req = http.get({ hostname: host, port, path, timeout: timeoutMs }, (res) => {
@@ -420,7 +531,7 @@ function renderDashboard(data) {
       : "Keep-awake is off by default";
 
   const tiles = [
-    tile({ title: "Gateway", value: badge(data.gatewayReady ? "Online" : "Offline", data.gatewayReady ? "ok" : "off"), detail: `OpenClaw on internal port ${GATEWAY_PORT}`, tone: data.gatewayReady ? "ok" : "off" }),
+    tile({ title: "Gateway", value: badge(data.gatewayPaused ? "Paused" : data.gatewayReady ? "Online" : "Offline", data.gatewayPaused ? "warn" : data.gatewayReady ? "ok" : "off"), detail: data.gatewayPaused ? `Paused by operator · OpenClaw on port ${GATEWAY_PORT}` : `OpenClaw on internal port ${GATEWAY_PORT}`, tone: data.gatewayPaused ? "warn" : data.gatewayReady ? "ok" : "off" }),
     tile({ title: "Model", value: `<code>${escapeHtml(LLM_MODEL)}</code>`, detail: LLM_PROVIDER ? `Provider: ${escapeHtml(LLM_PROVIDER)}` : "Primary LLM configured", tone: "neutral" }),
     tile({ title: "Runtime", value: escapeHtml(data.uptimeHuman), detail: `Public port ${PORT}`, tone: "neutral" }),
     tile({ title: "Telegram", value: badge(TELEGRAM_ENABLED ? "Enabled" : "Disabled", TELEGRAM_ENABLED ? "ok" : "neutral"), detail: TELEGRAM_ENABLED ? (TELEGRAM_WEBHOOK_URL ? "Webhook" : "Polling") + (process.env.CLOUDFLARE_PROXY_URL ? " via CF proxy" : "") : "Not configured", tone: TELEGRAM_ENABLED ? "ok" : "neutral" }),
@@ -494,6 +605,13 @@ function renderDashboard(data) {
       <span id="browser-keepawake-status" class="keepawake-status">Off</span>
     </div>
   </section>
+  <section class="keepawake-panel" aria-label="Gateway pause control">
+    <p><strong>Gateway Control:</strong> sirf OpenClaw gateway ko pause/resume karta hai. Terminal, JupyterLab, workspace backup aur WhatsApp guardian chalu rehte hain — unpe koi asar nahi padta.</p>
+    <div class="keepawake-actions">
+      <button type="button" id="gateway-toggle" class="mini-btn">⏸ Pause gateway</button>
+      <span id="gateway-toggle-status" class="keepawake-status">Checking…</span>
+    </div>
+  </section>
   <section class="overview">${tilesHtml}</section>
   <footer>Built by <a href="https://github.com/somratpro" target="_blank" rel="noopener noreferrer" style="color:inherit;text-decoration:none">@somratpro</a>${JUPYTER_ENABLED ? " · Terminal by JupyterLab" : ""} · Contributions by <a href="https://github.com/anurag008w" target="_blank" rel="noopener noreferrer" style="color:inherit;text-decoration:none">@anurag008w</a></footer>
   </main>
@@ -554,6 +672,58 @@ function renderDashboard(data) {
       pingFromBrowser();
       keepawakeTimer = setInterval(pingFromBrowser, 4 * 60 * 1000);
     });
+  }
+
+  const gwToggle = document.getElementById('gateway-toggle');
+  const gwToggleStatus = document.getElementById('gateway-toggle-status');
+  let gwPaused = false;
+
+  function renderGatewayToggle() {
+    if (!gwToggle) return;
+    gwToggle.textContent = gwPaused ? '▶ Resume gateway' : '⏸ Pause gateway';
+    if (gwToggleStatus) {
+      gwToggleStatus.textContent = gwPaused
+        ? 'Paused · terminal, sync & guardian still running'
+        : 'Gateway running';
+    }
+  }
+
+  async function refreshGatewayToggle() {
+    try {
+      const r = await fetch('/api/gateway?t=' + Date.now(), { cache: 'no-store' });
+      const j = await r.json();
+      gwPaused = j.paused === true;
+    } catch (err) {
+      gwPaused = false;
+    }
+    renderGatewayToggle();
+  }
+
+  if (gwToggle) {
+    gwToggle.addEventListener('click', async () => {
+      const action = gwPaused ? 'resume' : 'pause';
+      gwToggle.disabled = true;
+      if (gwToggleStatus) gwToggleStatus.textContent = action === 'pause' ? 'Pausing…' : 'Resuming…';
+      try {
+        const r = await fetch('/api/gateway/' + action, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+        });
+        const j = await r.json();
+        if (!r.ok) throw new Error(j.message || ('HTTP ' + r.status));
+        gwPaused = j.paused === true;
+        if (gwToggleStatus && j.killSent) gwToggleStatus.textContent = 'Paused (forced)';
+      } catch (err) {
+        if (gwToggleStatus) gwToggleStatus.textContent = 'Failed: ' + (err && err.message ? err.message : 'network error');
+        gwToggle.disabled = false;
+        return;
+      }
+      gwToggle.disabled = false;
+      renderGatewayToggle();
+      // start.sh relaunches a few seconds after the flag clears.
+      setTimeout(refreshGatewayToggle, 3000);
+    });
+    refreshGatewayToggle();
   }
 
   // Always re-fetch the live privacy status from the server to handle:
@@ -923,9 +1093,14 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (pathname === "/health") {
-    const gatewayReady = await probePort(GATEWAY_HOST, GATEWAY_PORT, "/health");
-    res.writeHead(gatewayReady ? 200 : 503, { "Content-Type": "application/json" });
-    return res.end(JSON.stringify({ status: gatewayReady ? "ok" : "degraded", gatewayReady, uptime: formatUptime(Date.now() - startTime), sync: getSyncStatus(), keepalive: getKeepaliveStatus() }));
+    // An operator-requested pause is a deliberate idle state, not a failure.
+    // Reporting 200 here keeps external supervisors (Render health checks,
+    // cron-job.org) from treating a paused gateway as a crash loop and
+    // restarting the container, which would fight the pause.
+    const paused = isGatewayPaused();
+    const gatewayReady = paused ? true : await probePort(GATEWAY_HOST, GATEWAY_PORT, "/health");
+    res.writeHead(200, { "Content-Type": "application/json" });
+    return res.end(JSON.stringify({ status: paused ? "paused" : gatewayReady ? "ok" : "degraded", gatewayReady, paused, uptime: formatUptime(Date.now() - startTime), sync: getSyncStatus(), keepalive: getKeepaliveStatus() }));
   }
 
   if (pathname === "/status") {
@@ -934,7 +1109,51 @@ const server = http.createServer(async (req, res) => {
       JUPYTER_ENABLED ? probePort(JUPYTER_HOST, JUPYTER_PORT, `${JUPYTER_BASE}/login`) : Promise.resolve(false),
     ]);
     res.writeHead(200, { "Content-Type": "application/json" });
-    return res.end(JSON.stringify({ model: LLM_MODEL, uptime: formatUptime(Date.now() - startTime), gatewayReady, jupyterReady, sync: getSyncStatus(), whatsapp: readGuardianStatus(), keepalive: getKeepaliveStatus() }));
+    return res.end(JSON.stringify({ model: LLM_MODEL, uptime: formatUptime(Date.now() - startTime), gatewayReady, jupyterReady, gatewayPaused: isGatewayPaused(), sync: getSyncStatus(), whatsapp: readGuardianStatus(), keepalive: getKeepaliveStatus() }));
+  }
+
+  // ── Gateway pause / resume ──
+  // Scoped to the OpenClaw gateway ONLY. Terminal, JupyterLab, this health
+  // server, workspace sync and the WhatsApp guardian all keep running.
+  if (pathname === "/api/gateway" && req.method === "GET") {
+    const [ready, alive] = await Promise.all([
+      probePort(GATEWAY_HOST, GATEWAY_PORT, "/health"),
+      gatewayProcessAlive(),
+    ]);
+    res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+    return res.end(JSON.stringify({ paused: isGatewayPaused(), ready, alive, port: GATEWAY_PORT }));
+  }
+
+  if (pathname === "/api/gateway/pause" || pathname === "/api/gateway/resume") {
+    if (req.method !== "POST") {
+      res.writeHead(405, { "Content-Type": "application/json", "Cache-Control": "no-store", Allow: "POST" });
+      return res.end(JSON.stringify({ error: "method_not_allowed", message: "Use POST" }));
+    }
+    if (!requireJsonAuth(req, res)) return;
+    const pausing = pathname.endsWith("/pause");
+    // Write the flag BEFORE signalling. start.sh checks it before every
+    // launch, so a gateway that restarts mid-pause stays down.
+    const err = setGatewayPaused(pausing);
+    if (err) {
+      res.writeHead(500, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+      return res.end(JSON.stringify({ error: "write_failed", message: err }));
+    }
+    let stop = null;
+    if (pausing) stop = await stopGatewayGracefully();
+    const [ready, alive] = await Promise.all([
+      probePort(GATEWAY_HOST, GATEWAY_PORT, "/health"),
+      gatewayProcessAlive(),
+    ]);
+    res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+    return res.end(JSON.stringify({
+      paused: isGatewayPaused(),
+      ready,
+      alive,
+      action: pausing ? "paused" : "resumed",
+      // start.sh relaunches within a few seconds of the flag being cleared.
+      stop,
+      unaffected: ["health-server", "jupyterlab", "workspace-sync", "devdata-sync", "whatsapp-guardian"],
+    }));
   }
 
   // Private space redirect — send users to the authenticated HF Spaces page.
@@ -1085,7 +1304,7 @@ const server = http.createServer(async (req, res) => {
       JUPYTER_ENABLED ? probePort(JUPYTER_HOST, JUPYTER_PORT, `${JUPYTER_BASE}/login`) : Promise.resolve(false),
     ]);
     res.writeHead(200, { "Content-Type": "text/html" });
-    return res.end(renderDashboard({ uptimeHuman: formatUptime(Date.now() - startTime), gatewayReady, jupyterReady, sync: getSyncStatus(), whatsapp: readGuardianStatus(), keepalive: getKeepaliveStatus() }));
+    return res.end(renderDashboard({ uptimeHuman: formatUptime(Date.now() - startTime), gatewayReady, jupyterReady, gatewayPaused: isGatewayPaused(), sync: getSyncStatus(), whatsapp: readGuardianStatus(), keepalive: getKeepaliveStatus() }));
   }
 
   // JupyterLab terminal

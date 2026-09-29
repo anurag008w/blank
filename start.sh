@@ -2926,6 +2926,16 @@ fi
 # Route system-bus probes to session bus so Chrome stops printing socket errors.
 export DBUS_SYSTEM_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-disabled:}"
 
+# ── Gateway pause control ──
+# The health server writes this flag file when the dashboard's Pause/Resume
+# button is used. It is the only shared state between the two processes:
+# health-server records the operator's intent, start.sh owns the relaunch
+# decision. Because it is a file, the pause survives both gateway restarts
+# and container restarts, so a wedged gateway stays down across a redeploy.
+GATEWAY_PAUSE_FILE="${GATEWAY_PAUSE_FILE:-/home/node/.openclaw/gateway.paused}"
+
+gateway_is_paused() { [ -f "$GATEWAY_PAUSE_FILE" ]; }
+
 while true; do
   # Check health-server process - restart if died unexpectedly
   if [ -n "${HEALTH_PID:-}" ] && ! kill -0 "$HEALTH_PID" 2>/dev/null; then
@@ -2954,6 +2964,17 @@ while true; do
   if [ "${AUTO_DOCTOR:-false}" = "true" ]; then
     HUGGINGCLAW_CAPTURE_DISABLE=1 hc_env_without_gateway_preloads openclaw doctor --fix || true
   fi
+
+  # ── Pause gate ──
+  # Skips ONLY the gateway. The health-server and JupyterLab supervision above
+  # still runs on every pass of this loop, so pausing the gateway leaves the
+  # terminal, workspace backup and WhatsApp guardian completely untouched.
+  if gateway_is_paused; then
+    echo "Gateway is paused — not starting it. Terminal, backup and guardian stay up."
+    sleep 5
+    continue
+  fi
+
   echo "Launching OpenClaw gateway on port ${GATEWAY_PORT}..."
 
   GATEWAY_ARGS=(gateway run --port "${GATEWAY_PORT}" --bind lan)
@@ -3021,6 +3042,17 @@ while true; do
   wait "$GATEWAY_PID"
   GATEWAY_EXIT_CODE=$?
   set -e
+
+  # If the operator paused us, do not come back up. Looping around re-enters
+  # the pause gate above, which skips the launch while continuing to supervise
+  # the health server and JupyterLab. Sync first: we may have just been
+  # SIGKILLed, and the workspace backup should capture state either way.
+  if gateway_is_paused; then
+    echo "Gateway stopped (exit ${GATEWAY_EXIT_CODE}) — paused, so it will not restart."
+    sync_before_gateway_restart
+    sleep 5
+    continue
+  fi
 
   sync_before_gateway_restart
 
