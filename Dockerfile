@@ -12,7 +12,11 @@ ARG OPENCLAW_VERSION=latest
 FROM ghcr.io/openclaw/openclaw:${OPENCLAW_VERSION} AS openclaw
 
 # ── Stage 2: Runtime ──
-FROM node:22-slim
+# OpenClaw >= the version that shipped the node:sqlite embedded-NUL guard refuses to
+# run on Node 22 (nodejs/node#61954 truncates TEXT at an embedded NUL). It requires
+# 24.16+ / 26.1+. Pinned exactly so a floating tag can never silently downgrade us
+# back into the "Gateway failed - DEV_MODE active, retrying in 10s..." loop again.
+FROM node:24.21.0-slim
 ARG OPENCLAW_VERSION=latest
 ARG DEV_MODE=false
 ARG HUGGINGCLAW_FULL_SUDO=false
